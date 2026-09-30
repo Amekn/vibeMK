@@ -37,6 +37,11 @@ class ConnectionHandler(BaseHandler):
             self.logger.exception(f"Error in {tool_name}")
             return self.error_response("Unexpected Error", str(e))
 
+    @staticmethod
+    def _checkmk_version(data: Dict[str, Any]) -> str:
+        """Extract the CheckMK version from a /version response (nested under versions.checkmk)"""
+        return data.get("versions", {}).get("checkmk") or "Unknown"
+
     async def _debug_connection(self) -> List[Dict[str, Any]]:
         """Debug CheckMK connection"""
         try:
@@ -54,7 +59,7 @@ class ConnectionHandler(BaseHandler):
                             f"👤 User: {self.client.config.username}\n"
                             f"🔒 SSL Verify: {self.client.config.verify_ssl}\n"
                             f"🔗 API Base URL: {self.client.api_base_url}\n"
-                            f"📊 Version: {data.get('version', 'Unknown')}\n"
+                            f"📊 Version: {self._checkmk_version(data)}\n"
                             f"📦 Edition: {data.get('edition', 'Unknown')}"
                         ),
                     }
@@ -169,7 +174,7 @@ class ConnectionHandler(BaseHandler):
                     "type": "text",
                     "text": (
                         f"📋 **CheckMK Version Information**\n\n"
-                        f"Version: {data.get('version', 'Unknown')}\n"
+                        f"Version: {self._checkmk_version(data)}\n"
                         f"Edition: {data.get('edition', 'Unknown')}\n"
                         f"Site: {self.client.config.site}\n"
                         f"Server: {self.client.config.server_url}"
