@@ -728,39 +728,6 @@ def get_group_management_tools() -> List[Dict[str, Any]]:
             "description": "🔧 List service groups - Show all service groups",
             "inputSchema": {"type": "object", "properties": {}},
         },
-        {
-            "name": "vibemk_create_service_group",
-            "description": "➕ Create service group - Add new service group",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Group name"},
-                    "alias": {"type": "string", "description": "Display alias"},
-                },
-                "required": ["name", "alias"],
-            },
-        },
-        {
-            "name": "vibemk_update_service_group",
-            "description": "📝 Update service group - Modify service group properties",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Group name"},
-                    "alias": {"type": "string", "description": "Display alias"},
-                },
-                "required": ["name"],
-            },
-        },
-        {
-            "name": "vibemk_delete_service_group",
-            "description": "🗑️ Delete service group - Remove service group",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"name": {"type": "string", "description": "Group name to delete"}},
-                "required": ["name"],
-            },
-        },
     ]
 
 
@@ -799,15 +766,6 @@ def get_advanced_monitoring_tools() -> List[Dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {"host_name": {"type": "string", "description": "Filter by host name"}},
-            },
-        },
-        {
-            "name": "vibemk_delete_downtime",
-            "description": "🗑️ Delete downtime - Remove scheduled downtime",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"downtime_id": {"type": "string", "description": "Downtime ID"}},
-                "required": ["downtime_id"],
             },
         },
         {
