@@ -256,7 +256,6 @@ class CheckMKMCPServer:
             "vibemk_acknowledge_problem": self.monitoring_handler,
             "vibemk_schedule_downtime": self.monitoring_handler,
             "vibemk_get_downtimes": self.monitoring_handler,
-            "vibemk_delete_downtime": self.monitoring_handler,
             "vibemk_reschedule_check": self.monitoring_handler,
             "vibemk_get_comments": self.monitoring_handler,
             "vibemk_add_comment": self.monitoring_handler,
@@ -299,9 +298,6 @@ class CheckMKMCPServer:
             "vibemk_update_host_group": self.groups_handler,
             "vibemk_delete_host_group": self.groups_handler,
             "vibemk_get_service_groups": self.groups_handler,
-            "vibemk_create_service_group": self.groups_handler,
-            "vibemk_update_service_group": self.groups_handler,
-            "vibemk_delete_service_group": self.groups_handler,
             # Rule management
             "vibemk_get_rulesets": self.rules_handler,
             "vibemk_get_ruleset": self.rules_handler,
