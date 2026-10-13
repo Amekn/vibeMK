@@ -278,7 +278,11 @@ def get_host_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "host_name": {"type": "string", "description": "Name of the cluster host"},
                     "folder": {"type": "string", "description": "Folder path"},
-                    "nodes": {"type": "array", "description": "List of node hostnames for the cluster"},
+                    "nodes": {
+                        "type": "array",
+                        "description": "List of node hostnames for the cluster",
+                        "items": {"type": "string"},
+                    },
                     "attributes": {"type": "object", "description": "Additional host attributes"},
                 },
                 "required": ["host_name", "nodes"],
@@ -423,7 +427,7 @@ def get_configuration_tools() -> List[Dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "sites": {"type": "array", "description": "List of site names"},
+                    "sites": {"type": "array", "description": "List of site names", "items": {"type": "string"}},
                     "force_foreign_changes": {"type": "boolean", "description": "Force activation"},
                 },
             },
@@ -531,8 +535,12 @@ def get_user_management_tools() -> List[Dict[str, Any]]:
                     "fullname": {"type": "string", "description": "Full name"},
                     "email": {"type": "string", "description": "Email address"},
                     "password": {"type": "string", "description": "Password"},
-                    "roles": {"type": "array", "description": "User roles"},
-                    "contactgroups": {"type": "array", "description": "Contact groups to assign user to"},
+                    "roles": {"type": "array", "description": "User roles", "items": {"type": "string"}},
+                    "contactgroups": {
+                        "type": "array",
+                        "description": "Contact groups to assign user to",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["username", "fullname"],
             },
@@ -546,8 +554,12 @@ def get_user_management_tools() -> List[Dict[str, Any]]:
                     "username": {"type": "string", "description": "Username"},
                     "fullname": {"type": "string", "description": "Full name"},
                     "email": {"type": "string", "description": "Email address"},
-                    "roles": {"type": "array", "description": "User roles"},
-                    "contactgroups": {"type": "array", "description": "Contact groups to assign user to"},
+                    "roles": {"type": "array", "description": "User roles", "items": {"type": "string"}},
+                    "contactgroups": {
+                        "type": "array",
+                        "description": "Contact groups to assign user to",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["username"],
             },
@@ -574,7 +586,7 @@ def get_user_management_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Group name"},
                     "alias": {"type": "string", "description": "Display alias"},
-                    "members": {"type": "array", "description": "Group members"},
+                    "members": {"type": "array", "description": "Group members", "items": {"type": "string"}},
                 },
                 "required": ["name", "alias"],
             },
@@ -611,7 +623,7 @@ def get_user_management_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Group name"},
                     "alias": {"type": "string", "description": "Display alias"},
-                    "members": {"type": "array", "description": "Group members"},
+                    "members": {"type": "array", "description": "Group members", "items": {"type": "string"}},
                 },
                 "required": ["name"],
             },
@@ -1027,7 +1039,23 @@ def get_tag_management_tools() -> List[Dict[str, Any]]:
                     "tag_id": {"type": "string", "description": "Tag group ID"},
                     "title": {"type": "string", "description": "Tag group title"},
                     "topic": {"type": "string", "description": "Tag topic/category"},
-                    "tags": {"type": "array", "description": "List of tags with id and title"},
+                    "tags": {
+                        "type": "array",
+                        "description": "List of tags with id and title",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Tag ID"},
+                                "title": {"type": "string", "description": "Tag title"},
+                                "aux_tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Auxiliary tag IDs",
+                                },
+                            },
+                            "required": ["id", "title"],
+                        },
+                    },
                     "help": {"type": "string", "description": "Help text"},
                 },
                 "required": ["tag_id", "title", "tags"],
@@ -1042,7 +1070,23 @@ def get_tag_management_tools() -> List[Dict[str, Any]]:
                     "tag_id": {"type": "string", "description": "Tag group ID"},
                     "title": {"type": "string", "description": "Tag group title"},
                     "topic": {"type": "string", "description": "Tag topic/category"},
-                    "tags": {"type": "array", "description": "List of tags with id and title"},
+                    "tags": {
+                        "type": "array",
+                        "description": "List of tags with id and title",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Tag ID"},
+                                "title": {"type": "string", "description": "Tag title"},
+                                "aux_tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Auxiliary tag IDs",
+                                },
+                            },
+                            "required": ["id", "title"],
+                        },
+                    },
                     "help": {"type": "string", "description": "Help text"},
                     "repair": {"type": "boolean", "description": "Repair host assignments", "default": False},
                 },
@@ -1080,9 +1124,62 @@ def get_timeperiod_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Time period name"},
                     "alias": {"type": "string", "description": "Time period alias"},
-                    "active_time_ranges": {"type": "array", "description": "Active time ranges"},
-                    "exceptions": {"type": "array", "description": "Exception time ranges"},
-                    "exclude": {"type": "array", "description": "Excluded time periods"},
+                    "active_time_ranges": {
+                        "type": "array",
+                        "description": "Active time ranges",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "day": {
+                                    "type": "string",
+                                    "enum": [
+                                        "all",
+                                        "monday",
+                                        "tuesday",
+                                        "wednesday",
+                                        "thursday",
+                                        "friday",
+                                        "saturday",
+                                        "sunday",
+                                    ],
+                                },
+                                "time_ranges": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                            "end": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                        },
+                                        "required": ["start", "end"],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    "exceptions": {
+                        "type": "array",
+                        "description": "Exception time ranges",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                                "time_ranges": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                            "end": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                        },
+                                        "required": ["start", "end"],
+                                    },
+                                },
+                            },
+                            "required": ["date"],
+                        },
+                    },
+                    "exclude": {"type": "array", "description": "Excluded time periods", "items": {"type": "string"}},
                 },
                 "required": ["name", "active_time_ranges"],
             },
@@ -1095,9 +1192,62 @@ def get_timeperiod_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "name": {"type": "string", "description": "Time period name"},
                     "alias": {"type": "string", "description": "Time period alias"},
-                    "active_time_ranges": {"type": "array", "description": "Active time ranges"},
-                    "exceptions": {"type": "array", "description": "Exception time ranges"},
-                    "exclude": {"type": "array", "description": "Excluded time periods"},
+                    "active_time_ranges": {
+                        "type": "array",
+                        "description": "Active time ranges",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "day": {
+                                    "type": "string",
+                                    "enum": [
+                                        "all",
+                                        "monday",
+                                        "tuesday",
+                                        "wednesday",
+                                        "thursday",
+                                        "friday",
+                                        "saturday",
+                                        "sunday",
+                                    ],
+                                },
+                                "time_ranges": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                            "end": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                        },
+                                        "required": ["start", "end"],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    "exceptions": {
+                        "type": "array",
+                        "description": "Exception time ranges",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                                "time_ranges": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                            "end": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                                        },
+                                        "required": ["start", "end"],
+                                    },
+                                },
+                            },
+                            "required": ["date"],
+                        },
+                    },
+                    "exclude": {"type": "array", "description": "Excluded time periods", "items": {"type": "string"}},
                 },
                 "required": ["name"],
             },
@@ -1134,7 +1284,7 @@ def get_password_tools() -> List[Dict[str, Any]]:
                     "comment": {"type": "string", "description": "Password description"},
                     "documentation_url": {"type": "string", "description": "Documentation URL"},
                     "owner": {"type": "string", "description": "Owner user/group", "default": "admin"},
-                    "shared": {"type": "array", "description": "Shared with users/groups"},
+                    "shared": {"type": "array", "description": "Shared with users/groups", "items": {"type": "string"}},
                 },
                 "required": ["ident", "password"],
             },
@@ -1151,7 +1301,7 @@ def get_password_tools() -> List[Dict[str, Any]]:
                     "comment": {"type": "string", "description": "Password description"},
                     "documentation_url": {"type": "string", "description": "Documentation URL"},
                     "owner": {"type": "string", "description": "Owner user/group"},
-                    "shared": {"type": "array", "description": "Shared with users/groups"},
+                    "shared": {"type": "array", "description": "Shared with users/groups", "items": {"type": "string"}},
                 },
                 "required": ["ident"],
             },
