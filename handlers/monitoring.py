@@ -24,6 +24,51 @@ from api.exceptions import CheckMKError
 from handlers.base import BaseHandler
 
 
+HOST_PROBLEM_COLUMNS = ["name", "state", "state_type", "plugin_output", "acknowledged", "scheduled_downtime_depth"]
+SERVICE_PROBLEM_COLUMNS = [
+    "host_name",
+    "description",
+    "state",
+    "state_type",
+    "plugin_output",
+    "acknowledged",
+    "scheduled_downtime_depth",
+]
+HOST_STATE_NAMES = {0: "UP", 1: "DOWN", 2: "UNREACHABLE"}
+SERVICE_STATE_NAMES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
+SERVICE_SEVERITY = {2: 0, 3: 1, 1: 2, 0: 3}  # CRIT, UNKNOWN, WARN, OK
+MAX_LISTED_PROBLEMS = 150
+NO_COUNTS_NOTE = "No counts are reported; check the CheckMK web UI."
+
+
+def _is_state(value: Any) -> bool:
+    """A real monitoring state: int 0-3 (bool is not accepted)."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3
+
+
+def _is_handled(row: Dict[str, Any]) -> bool:
+    return bool(row.get("acknowledged")) or bool(row.get("scheduled_downtime_depth"))
+
+
+def _flags(row: Dict[str, Any]) -> str:
+    flags = []
+    if row.get("state_type") == 0:
+        flags.append("soft")
+    if row.get("acknowledged"):
+        flags.append("acknowledged")
+    if row.get("scheduled_downtime_depth"):
+        flags.append("in downtime")
+    return f" ({', '.join(flags)})" if flags else ""
+
+
+def _output(row: Dict[str, Any]) -> str:
+    text = str(row.get("plugin_output") or "").strip().splitlines()
+    if not text:
+        return ""
+    first = text[0]
+    return f" - {first[:120]}{'...' if len(first) > 120 else ''}"
+
+
 class MonitoringHandler(BaseHandler):
     """Handle monitoring and problem management operations"""
 
@@ -57,91 +102,93 @@ class MonitoringHandler(BaseHandler):
             return self.error_response("Unexpected Error", str(e))
 
     async def _get_current_problems(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get current problems (hosts and services with issues)"""
+        """Get current problems (hosts not UP, services not OK) across the whole site.
+
+        One POST per object type with explicit columns. Every row must carry a
+        valid state; if any is missing we report an error rather than counts, so
+        a missing state can never be read as OK.
+        """
         target_host = arguments.get("host_name")
-        problems = []
+        host_query = {"op": "=", "left": "name", "right": target_host} if target_host else None
 
         try:
-            # First get list of all hosts to check their live status
-            host_list_result = self.client.get("domain-types/host_config/collections/all")
+            host_result = self.client.list_monitoring("host", HOST_PROBLEM_COLUMNS, query=host_query)
+            service_result = self.client.list_monitoring("service", SERVICE_PROBLEM_COLUMNS, host_name=target_host)
+        except CheckMKError as e:
+            return self.error_response("Could not read monitoring states", f"{e}\n\n{NO_COUNTS_NOTE}")
 
-            if host_list_result.get("success"):
-                hosts = host_list_result["data"].get("value", [])
+        if not host_result.get("success") or not service_result.get("success"):
+            return self.error_response("Could not read monitoring states", NO_COUNTS_NOTE)
 
-                # Filter to specific host if requested
-                if target_host:
-                    hosts = [h for h in hosts if h.get("id") == target_host]
+        hosts = [row.get("extensions", {}) for row in host_result.get("data", {}).get("value", [])]
+        services = [row.get("extensions", {}) for row in service_result.get("data", {}).get("value", [])]
 
-                # Check each host's live status using the documented endpoint
-                for host in hosts[:20]:  # Limit processing
-                    host_name = host.get("id", "Unknown")
+        if not hosts:
+            if target_host:
+                return self.error_response("Host not found", f"Host '{target_host}' is not in monitoring")
+            return self.error_response("CheckMK returned no hosts", NO_COUNTS_NOTE)
 
-                    # Get live host status with columns parameter (as documented in CLAUDE.md)
-                    host_status = self.client.get(
-                        f"objects/host/{host_name}",
-                        params={"columns": ["state", "hard_state", "state_type", "plugin_output"]},
-                    )
+        hosts_missing = sum(1 for h in hosts if not _is_state(h.get("state")))
+        services_missing = sum(1 for s in services if not _is_state(s.get("state")))
+        if hosts_missing or services_missing:
+            return self.error_response(
+                "CheckMK returned no state",
+                f"State missing for {hosts_missing} of {len(hosts)} hosts and "
+                f"{services_missing} of {len(services)} services.\n\n{NO_COUNTS_NOTE}",
+            )
 
-                    if host_status.get("success"):
-                        extensions = host_status["data"].get("extensions", {})
-                        state = extensions.get("state", 0)
-                        hard_state = extensions.get("hard_state", 0)
-                        state_type = extensions.get("state_type", 0)
+        host_problems = [h for h in hosts if h["state"] != 0]
+        service_problems = [s for s in services if s["state"] != 0]
+        host_problems.sort(key=lambda h: (-h["state"], str(h.get("name", ""))))
+        service_problems.sort(
+            key=lambda s: (SERVICE_SEVERITY[s["state"]], str(s.get("host_name", "")), str(s.get("description", "")))
+        )
 
-                        # Use hard_state if state_type = 1 (hard state), otherwise soft state
-                        current_state = hard_state if state_type == 1 else state
+        scope = f"host '{target_host}'" if target_host else "all hosts"
+        checked = f"Checked {len(hosts)} hosts and {len(services)} services ({scope}); every object returned a state."
 
-                        # Only include hosts with problems (state != 0)
-                        if current_state != 0:
-                            state_name = {1: "DOWN", 2: "UNREACHABLE"}.get(current_state, f"STATE({current_state})")
-                            problems.append(f"🖥️ HOST: {host_name} - {state_name}")
+        if not host_problems and not service_problems:
+            return [{"type": "text", "text": f"✅ **No current problems**\n\n{checked}"}]
 
-            # Get list of all services to check their live status
-            service_list_result = self.client.get("domain-types/service/collections/all")
+        def count(rows: List[Dict[str, Any]], state: int) -> int:
+            return sum(1 for r in rows if r["state"] == state)
 
-            if service_list_result.get("success"):
-                services = service_list_result["data"].get("value", [])
+        def unhandled(rows: List[Dict[str, Any]]) -> int:
+            return sum(1 for r in rows if not _is_handled(r))
 
-                # Filter to specific host if requested
-                if target_host:
-                    services = [s for s in services if s.get("extensions", {}).get("host_name") == target_host]
+        summary = [
+            checked,
+            "",
+            f"Hosts: {count(host_problems, 1)} DOWN, {count(host_problems, 2)} UNREACHABLE "
+            f"({unhandled(host_problems)} unhandled)",
+            f"Services: {count(service_problems, 2)} CRITICAL, {count(service_problems, 1)} WARNING, "
+            f"{count(service_problems, 3)} UNKNOWN ({unhandled(service_problems)} unhandled)",
+            "",
+            "Counts include acknowledged problems and problems in downtime; 'unhandled' excludes them.",
+        ]
 
-                # Check each service's live status using the documented endpoint
-                for service in services[:50]:  # Limit processing
-                    service_ext = service.get("extensions", {})
-                    host_name = service_ext.get("host_name", "Unknown")
-                    description = service_ext.get("description", "Unknown")
+        lines = []
+        for h in host_problems:
+            name = HOST_STATE_NAMES.get(h["state"], f"STATE({h['state']})")
+            lines.append(f"🖥️ HOST: {h.get('name', 'Unknown')} - {name}{_flags(h)}{_output(h)}")
+        for s in service_problems:
+            name = SERVICE_STATE_NAMES.get(s["state"], f"STATE({s['state']})")
+            lines.append(
+                f"🔧 SERVICE: {s.get('host_name', 'Unknown')}/{s.get('description', 'Unknown')} - "
+                f"{name}{_flags(s)}{_output(s)}"
+            )
 
-                    if host_name != "Unknown" and description != "Unknown":
-                        # Get live service status using show_service action (as documented in CLAUDE.md)
-                        service_status = self.client.get(
-                            f"objects/host/{host_name}/actions/show_service/invoke",
-                            params={"service_description": description},
-                        )
+        shown = lines[:MAX_LISTED_PROBLEMS]
+        if len(lines) > len(shown):
+            shown.append(f"... and {len(lines) - len(shown)} more (the counts above are complete)")
 
-                        if service_status.get("success"):
-                            extensions = service_status["data"].get("extensions", {})
-                            state = extensions.get("state", 0)
-                            state_type = extensions.get("state_type", 0)
-
-                            # For services, use state directly (hard_state may not be available in service API)
-                            current_state = state
-
-                            # Only include services with problems (state != 0)
-                            if current_state != 0:
-                                state_name = {1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}.get(
-                                    current_state, f"STATE({current_state})"
-                                )
-                                problems.append(f"🔧 SERVICE: {host_name}/{description} - {state_name}")
-
-        except Exception as e:
-            self.logger.error(f"Error getting current problems: {e}")
-            return self.error_response("Error retrieving problems", str(e))
-
-        if not problems:
-            return [{"type": "text", "text": "✅ No current problems found"}]
-
-        return [{"type": "text", "text": f"🚨 **Current Problems** ({len(problems)} total):\n\n" + "\n".join(problems)}]
+        total = len(host_problems) + len(service_problems)
+        return [
+            {
+                "type": "text",
+                "text": f"🚨 **Current Problems** ({total} total)\n\n" + "\n".join(summary) + "\n\n" + "\n".join(shown),
+            }
+        ]
 
     async def _acknowledge_problem(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Acknowledge a host or service problem"""
