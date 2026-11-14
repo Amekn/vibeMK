@@ -134,6 +134,20 @@ CURRENT_PROBLEMS = {
                 "required": ["host_name", "service_description", "state", "state_code"],
             },
         },
+        "summary": {
+            "type": "object",
+            "description": "Counts over every host and service checked, including those not listed in the text",
+            "properties": {
+                "hosts_checked": {"type": "integer"},
+                "services_checked": {"type": "integer"},
+                "hosts_down": {"type": "integer"},
+                "hosts_unreachable": {"type": "integer"},
+                "services_critical": {"type": "integer"},
+                "services_warning": {"type": "integer"},
+                "services_unknown": {"type": "integer"},
+                "unhandled": {"type": "integer", "description": "Problems neither acknowledged nor in downtime"},
+            },
+        },
     },
     "required": ["total", "host_problems", "service_problems"],
 }

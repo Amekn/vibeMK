@@ -368,6 +368,40 @@ class CheckMKClient:
         """POST request with optional custom headers"""
         return self.request(endpoint, "POST", data=data, custom_headers=headers)
 
+    def list_monitoring(
+        self,
+        domain_type: str,
+        columns: List[str],
+        query: Optional[Dict[str, Any]] = None,
+        host_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List live host or service rows with explicit columns.
+
+        POSTs domain-types/{host|service}/collections/all with a JSON body.
+        The GET form is deprecated (Werks 17003 and 17512) and goes in 3.0,
+        so GET is only the fallback for a CheckMK that answers 404 or 405.
+        Without explicit columns CheckMK returns names only, never a state.
+        """
+        if domain_type not in ("host", "service"):
+            raise ValueError(f"list_monitoring lists 'host' or 'service', not {domain_type!r}")
+        if host_name is not None and domain_type != "service":
+            raise ValueError("host_name filters services only; query hosts by name instead")
+
+        body: Dict[str, Any] = {"columns": list(columns)}
+        if query is not None:
+            body["query"] = query
+        if host_name is not None:
+            body["host_name"] = host_name
+
+        endpoint = f"domain-types/{domain_type}/collections/all"
+        try:
+            return self.post(endpoint, data=body)
+        except CheckMKError as e:
+            if e.status_code not in (404, 405):
+                raise
+            logger.warning("POST %s answered HTTP %s; falling back to the GET form", endpoint, e.status_code)
+            return self.get(endpoint, params=body)
+
     def put(
         self, endpoint: str, data: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:

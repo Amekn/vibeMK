@@ -100,7 +100,7 @@ class TestServiceStatus:
 class TestCurrentProblems:
     @pytest.mark.asyncio
     async def test_problems_say_whether_someone_already_handles_them(self, mock_checkmk_client):
-        mock_checkmk_client.get.side_effect = [
+        mock_checkmk_client.post.side_effect = [
             {
                 "success": True,
                 "data": {
@@ -151,15 +151,20 @@ class TestCurrentProblems:
 
     @pytest.mark.asyncio
     async def test_no_problems_still_carries_structured_content(self, mock_checkmk_client):
-        mock_checkmk_client.get.return_value = {"success": True, "data": {"value": []}}
+        mock_checkmk_client.post.side_effect = [
+            {"success": True, "data": {"value": [{"extensions": {"name": "web01", "state": 0}}]}},
+            {"success": True, "data": {"value": []}},
+        ]
 
         content = await MonitoringHandler(mock_checkmk_client).handle("vibemk_get_current_problems", {})
 
-        assert assert_valid("vibemk_get_current_problems", content) == {
+        data = assert_valid("vibemk_get_current_problems", content)
+        assert {k: data[k] for k in ("total", "host_problems", "service_problems")} == {
             "total": 0,
             "host_problems": [],
             "service_problems": [],
         }
+        assert data["summary"]["hosts_checked"] == 1
 
 
 def _downtimes() -> Dict[str, Any]:

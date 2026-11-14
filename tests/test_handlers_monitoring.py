@@ -64,7 +64,7 @@ def one_critical_service(mock_checkmk_client):
     def answer(endpoint: str, params: Any = None, **_: Any) -> Dict[str, Any]:
         return hosts if "host/collections" in endpoint else services
 
-    mock_checkmk_client.get.side_effect = answer
+    mock_checkmk_client.post.side_effect = lambda endpoint, data=None, **_: answer(endpoint, data)
     return mock_checkmk_client
 
 
@@ -103,14 +103,17 @@ class TestProblemsCarryTheirCause:
     async def test_last_state_change_is_requested_from_checkmk(self, handler, one_critical_service):
         await handler.handle("vibemk_get_current_problems", {})
 
-        service_call = [c for c in handler.client.get.call_args_list if "service/collections" in c.args[0]][0]
-        assert "last_state_change" in service_call.kwargs["params"]["columns"]
+        service_call = [c for c in handler.client.post.call_args_list if "service/collections" in c.args[0]][0]
+        assert "last_state_change" in service_call.kwargs["data"]["columns"]
 
 
 class TestNoProblems:
     @pytest.mark.asyncio
     async def test_an_all_clear_is_reported(self, handler, mock_checkmk_client):
-        mock_checkmk_client.get.return_value = collection([])
+        mock_checkmk_client.post.side_effect = [
+            collection([{"extensions": {"name": "web01", "state": 0}}]),
+            collection([]),
+        ]
 
         result = await handler.handle("vibemk_get_current_problems", {})
 

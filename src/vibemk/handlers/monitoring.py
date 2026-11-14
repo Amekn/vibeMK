@@ -24,6 +24,29 @@ from vibemk.api.exceptions import CheckMKError
 from vibemk.handlers.base import BaseHandler
 from vibemk.handlers.downtimes import downtime_record
 
+PROBLEM_HOST_COLUMNS = ["name", "state", "acknowledged", "scheduled_downtime_depth"]
+PROBLEM_SERVICE_COLUMNS = [
+    "host_name",
+    "description",
+    "state",
+    "plugin_output",
+    "last_state_change",
+    "acknowledged",
+    "scheduled_downtime_depth",
+]
+# CRITICAL first, then UNKNOWN, then WARNING.
+_SERVICE_SEVERITY = {2: 0, 3: 1, 1: 2}
+# A large site has hundreds of problems; listing them all costs a model most of
+# its context. The counts and the structured data always cover every one.
+MAX_LISTED_PROBLEMS = 150
+MAX_OUTPUT_CHARS = 160
+NO_COUNTS = "No counts are reported; check the CheckMK web UI."
+
+
+def _is_state(value: Any) -> bool:
+    """A real monitoring state: an int from 0 to 3 (bool is not one)."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3
+
 
 def _handling(extensions: Dict[str, Any]) -> Dict[str, bool]:
     """Whether someone already deals with a problem: acknowledged, or inside a downtime."""
@@ -81,116 +104,147 @@ class MonitoringHandler(BaseHandler):
         question has no good answer. The collection already returns it here.
         """
         line = f"🔧 SERVICE: {host_name}/{description} - {state_name}"
-        if plugin_output:
-            line += f"\n    {plugin_output.strip()}"
+        first_line = plugin_output.strip().splitlines()[0] if plugin_output.strip() else ""
+        if first_line:
+            # The text goes to a model's context; the full output stays in the structured data.
+            if len(first_line) > MAX_OUTPUT_CHARS:
+                first_line = first_line[:MAX_OUTPUT_CHARS] + "..."
+            line += f"\n    {first_line}"
         if last_state_change:
             since = datetime.fromtimestamp(last_state_change, tz=timezone.utc)
             line += f"\n    since {since:%Y-%m-%d %H:%M} UTC"
         return line
 
     async def _get_current_problems(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get current problems (hosts and services with issues)"""
+        """Get current problems (hosts not UP, services not OK) across the site.
+
+        One request per object type. Every row must carry a real state: a row
+        without one is reported as an error with no counts, never read as OK,
+        because "no state" and "no problem" look the same to the caller.
+        """
         target_host = arguments.get("host_name")
-        problems = []
+        host_query = {"op": "=", "left": "name", "right": target_host} if target_host else None
+
+        try:
+            host_list_result = self.client.list_monitoring("host", PROBLEM_HOST_COLUMNS, query=host_query)
+            service_list_result = self.client.list_monitoring(
+                "service", PROBLEM_SERVICE_COLUMNS, host_name=target_host or None
+            )
+        except CheckMKError as e:
+            return self.error_response("Could not read monitoring states", f"{e}\n\n{NO_COUNTS}")
+
+        if not host_list_result.get("success") or not service_list_result.get("success"):
+            return self.error_response("Could not read monitoring states", NO_COUNTS)
+
+        hosts = [h.get("extensions", {}) for h in host_list_result["data"].get("value", [])]
+        services = [s.get("extensions", {}) for s in service_list_result["data"].get("value", [])]
+
+        if not hosts:
+            # An account that sees no hosts gets an empty list, which is not an all-clear.
+            if target_host:
+                return self.error_response("Host not found", f"Host '{target_host}' is not in monitoring")
+            return self.error_response(
+                "CheckMK returned no hosts", f"The account may not be allowed to see any.\n\n{NO_COUNTS}"
+            )
+
+        hosts_without_state = sum(1 for h in hosts if not _is_state(h.get("state")))
+        services_without_state = sum(1 for s in services if not _is_state(s.get("state")))
+        if hosts_without_state or services_without_state:
+            return self.error_response(
+                "CheckMK returned no state",
+                f"State missing for {hosts_without_state} of {len(hosts)} hosts and "
+                f"{services_without_state} of {len(services)} services.\n\n{NO_COUNTS}",
+            )
+
+        failing_hosts = sorted(
+            (h for h in hosts if h["state"] != 0),
+            key=lambda h: (-h["state"], bool(_handling_note(h)), str(h.get("name", ""))),
+        )
+        failing_services = sorted(
+            (s for s in services if s["state"] != 0),
+            key=lambda s: (
+                _SERVICE_SEVERITY[s["state"]],
+                bool(_handling_note(s)),
+                str(s.get("host_name", "")),
+                str(s.get("description", "")),
+            ),
+        )
+
+        problems: List[str] = []
         host_problems: List[Dict[str, Any]] = []
         service_problems: List[Dict[str, Any]] = []
 
-        try:
-            # Hosts: query the monitoring 'host' collection ONCE with the state
-            # column. (The old code looped one HTTP call per host against the
-            # Setup 'host_config' collection, which is empty for a Guest account —
-            # so it silently missed every DOWN host.)
-            host_list_result = self.client.get(
-                "domain-types/host/collections/all",
-                params={"columns": ["name", "state", "acknowledged", "scheduled_downtime_depth"]},
+        for ext in failing_hosts:
+            host_name = ext.get("name", "Unknown")
+            state = ext["state"]
+            state_name = {1: "DOWN", 2: "UNREACHABLE"}.get(state, f"STATE({state})")
+            problems.append(f"🖥️ HOST: {host_name} - {state_name}{_handling_note(ext)}")
+            host_problems.append({"host_name": host_name, "state": state_name, "state_code": state, **_handling(ext)})
+
+        for ext in failing_services:
+            host_name = ext.get("host_name", "Unknown")
+            description = ext.get("description", "Unknown")
+            state = ext["state"]
+            state_name = {1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}[state]
+            problems.append(
+                self._format_service_problem(
+                    host_name,
+                    description,
+                    state_name + _handling_note(ext),
+                    ext.get("plugin_output", ""),
+                    ext.get("last_state_change", 0),
+                )
+            )
+            changed = ext.get("last_state_change")
+            service_problems.append(
+                {
+                    "host_name": host_name,
+                    "service_description": description,
+                    "state": state_name,
+                    "state_code": state,
+                    "plugin_output": (ext.get("plugin_output") or "").strip(),
+                    "last_state_change": changed if isinstance(changed, int) and changed > 0 else None,
+                    **_handling(ext),
+                }
             )
 
-            if host_list_result.get("success"):
-                for host in host_list_result["data"].get("value", []):
-                    ext = host.get("extensions", {})
-                    host_name = ext.get("name") or host.get("id", "Unknown")
+        def count(rows: List[Dict[str, Any]], state: int) -> int:
+            return sum(1 for r in rows if r["state"] == state)
 
-                    # Filter to specific host if requested
-                    if target_host and host_name != target_host:
-                        continue
-
-                    state = ext.get("state", 0)
-                    if state != 0:
-                        state_name = {1: "DOWN", 2: "UNREACHABLE"}.get(state, f"STATE({state})")
-                        problems.append(f"🖥️ HOST: {host_name} - {state_name}{_handling_note(ext)}")
-                        host_problems.append(
-                            {
-                                "host_name": host_name,
-                                "state": state_name,
-                                "state_code": state,
-                                **_handling(ext),
-                            }
-                        )
-
-            # Services: query the monitoring 'service' collection ONCE with the
-            # state column and filter in memory. (The old code fired a separate
-            # show_service call per service and only looked at the first 50 of
-            # ~1500 services — slow and incomplete.)
-            service_list_result = self.client.get(
-                "domain-types/service/collections/all",
-                params={
-                    "columns": [
-                        "host_name",
-                        "description",
-                        "state",
-                        "plugin_output",
-                        "last_state_change",
-                        "acknowledged",
-                        "scheduled_downtime_depth",
-                    ]
-                },
-            )
-
-            if service_list_result.get("success"):
-                for service in service_list_result["data"].get("value", []):
-                    ext = service.get("extensions", {})
-                    host_name = ext.get("host_name", "Unknown")
-
-                    # Filter to specific host if requested
-                    if target_host and host_name != target_host:
-                        continue
-
-                    state = ext.get("state", 0)
-                    if state != 0:
-                        description = ext.get("description", "Unknown")
-                        state_name = {1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}.get(state, f"STATE({state})")
-                        problems.append(
-                            self._format_service_problem(
-                                host_name,
-                                description,
-                                state_name + _handling_note(ext),
-                                ext.get("plugin_output", ""),
-                                ext.get("last_state_change", 0),
-                            )
-                        )
-                        changed = ext.get("last_state_change")
-                        service_problems.append(
-                            {
-                                "host_name": host_name,
-                                "service_description": description,
-                                "state": state_name,
-                                "state_code": state,
-                                "plugin_output": (ext.get("plugin_output") or "").strip(),
-                                "last_state_change": changed if isinstance(changed, int) and changed > 0 else None,
-                                **_handling(ext),
-                            }
-                        )
-
-        except Exception as e:
-            self.logger.exception("Error getting current problems")
-            return self.error_response("Error retrieving problems", str(e))
-
-        data = {"total": len(problems), "host_problems": host_problems, "service_problems": service_problems}
+        summary = {
+            "hosts_checked": len(hosts),
+            "services_checked": len(services),
+            "hosts_down": count(failing_hosts, 1),
+            "hosts_unreachable": count(failing_hosts, 2),
+            "services_critical": count(failing_services, 2),
+            "services_warning": count(failing_services, 1),
+            "services_unknown": count(failing_services, 3),
+            "unhandled": sum(1 for r in failing_hosts + failing_services if not _handling_note(r)),
+        }
+        data = {
+            "total": len(problems),
+            "host_problems": host_problems,
+            "service_problems": service_problems,
+            "summary": summary,
+        }
+        checked = f"Checked {len(hosts)} hosts and {len(services)} services; every one returned a state."
         if not problems:
-            return self.structured_response("✅ No current problems found", data)
+            return self.structured_response(f"✅ No current problems found\n\n{checked}", data)
 
+        counts = (
+            f"{checked}\n"
+            f"Hosts: {summary['hosts_down']} DOWN, {summary['hosts_unreachable']} UNREACHABLE. "
+            f"Services: {summary['services_critical']} CRITICAL, {summary['services_warning']} WARNING, "
+            f"{summary['services_unknown']} UNKNOWN. "
+            f"Unhandled (not acknowledged, not in downtime): {summary['unhandled']}."
+        )
+        listed = problems[:MAX_LISTED_PROBLEMS]
+        if len(problems) > len(listed):
+            listed.append(
+                f"... and {len(problems) - len(listed)} more, not listed here (the counts above include them)"
+            )
         return self.structured_response(
-            f"🚨 **Current Problems** ({len(problems)} total):\n\n" + "\n".join(problems), data
+            f"🚨 **Current Problems** ({len(problems)} total):\n\n{counts}\n\n" + "\n".join(listed), data
         )
 
     async def _acknowledge_problem(self, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
