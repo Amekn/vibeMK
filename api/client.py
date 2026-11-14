@@ -294,3 +294,40 @@ class CheckMKClient:
     def patch(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """PATCH request"""
         return self.request(endpoint, "PATCH", data=data)
+
+    # Monitoring (livestatus-backed) collections
+    def list_monitoring(
+        self,
+        domain_type: str,
+        columns: List[str],
+        query: Optional[Union[Dict[str, Any], str]] = None,
+        host_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List live host or service monitoring rows with explicit columns.
+
+        Checkmk 2.2+ offers POST domain-types/{host|service}/collections/all with a
+        JSON body; the GET form is deprecated (Werks 17003/17512) and goes in 3.0.
+        Without explicit columns Checkmk only returns name columns, never state.
+        POST is used first; only on 404/405 (older Checkmk) do we fall back to GET.
+        """
+        if domain_type not in ("host", "service"):
+            raise ValueError(f"list_monitoring supports 'host' or 'service', not {domain_type!r}")
+        if host_name is not None and domain_type != "service":
+            raise ValueError("host_name filter is only valid for services")
+
+        body: Dict[str, Any] = {"columns": list(columns)}
+        if query is not None:
+            body["query"] = json.loads(query) if isinstance(query, str) else query
+        if host_name is not None:
+            body["host_name"] = host_name
+
+        endpoint = f"domain-types/{domain_type}/collections/all"
+        try:
+            return self.request(endpoint, "POST", data=body)
+        except CheckMKError as e:
+            if e.status_code not in (404, 405):
+                raise
+            logger.warning(
+                "POST %s returned HTTP %s; falling back to the GET form", endpoint, e.status_code
+            )
+            return self.request(endpoint, "GET", params=body)

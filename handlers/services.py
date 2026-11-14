@@ -8,6 +8,29 @@ from api.exceptions import CheckMKError
 from handlers.base import BaseHandler
 
 
+SERVICE_LIST_COLUMNS = ["host_name", "description", "state", "plugin_output"]
+SERVICE_STATE_NAMES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
+
+
+def _is_state(value: Any) -> bool:
+    """A real monitoring state: int 0-3 (bool is not accepted)."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3
+
+
+def _state_label(state: Any) -> str:
+    """Never turn a missing state into OK or a fake UNKNOWN."""
+    return SERVICE_STATE_NAMES[state] if _is_state(state) else "STATE NOT RETURNED"
+
+
+def _missing_state_warning(missing: int, total: int) -> str:
+    if not missing:
+        return ""
+    return (
+        f"⚠️ **CheckMK returned no state for {missing} of {total} services.** "
+        "Do not count these as OK; check the CheckMK web UI.\\n\\n"
+    )
+
+
 class ServiceHandler(BaseHandler):
     """Handle service management operations"""
 
@@ -48,14 +71,17 @@ class ServiceHandler(BaseHandler):
                         services = services_data.get("value", [])
                         if isinstance(services, list):
                             service_list = []
-                            status_map = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
+                            missing = sum(
+                                1
+                                for svc in services
+                                if not isinstance(svc, dict) or not _is_state(svc.get("extensions", {}).get("state"))
+                            )
 
                             for service in services[:50]:  # Limit display
                                 if isinstance(service, dict):
                                     extensions = service.get("extensions", {})
                                     description = extensions.get("description", "Unknown")
-                                    state = extensions.get("state")
-                                    status = status_map.get(state, f"UNKNOWN({state})")
+                                    status = _state_label(extensions.get("state"))
                                     plugin_output = (
                                         extensions.get("plugin_output", "")[:50] + "..."
                                         if len(extensions.get("plugin_output", "")) > 50
@@ -71,7 +97,8 @@ class ServiceHandler(BaseHandler):
                                     {
                                         "type": "text",
                                         "text": (
-                                            f"🔧 **Services for Host: {host_name}** ({len(services)} total, showing first {len(service_list)}):\\n\\n"
+                                            _missing_state_warning(missing, len(services))
+                                            + f"🔧 **Services for Host: {host_name}** ({len(services)} total, showing first {len(service_list)}):\\n\\n"
                                             + "\\n\\n".join(service_list)
                                         ),
                                     }
@@ -83,11 +110,7 @@ class ServiceHandler(BaseHandler):
 
         # Method 2: Fallback to domain-types collection (for all services or if host-specific failed)
         try:
-            params = {}
-            if host_name:
-                params["host_name"] = host_name
-
-            result = self.client.get("domain-types/service/collections/all", params=params)
+            result = self.client.list_monitoring("service", SERVICE_LIST_COLUMNS, host_name=host_name or None)
 
             if not result.get("success"):
                 return self.error_response("Failed to retrieve services")
@@ -97,20 +120,20 @@ class ServiceHandler(BaseHandler):
                 return [{"type": "text", "text": "📭 No services found"}]
 
             service_list = []
-            status_map = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
+            missing = sum(1 for svc in services if not _is_state(svc.get("extensions", {}).get("state")))
 
             for service in services[:50]:  # Limit display
                 service_host = service.get("extensions", {}).get("host_name", "Unknown")
                 description = service.get("extensions", {}).get("description", "Unknown")
-                state = service.get("extensions", {}).get("state")
-                status = status_map.get(state, f"UNKNOWN({state})")
+                status = _state_label(service.get("extensions", {}).get("state"))
                 service_list.append(f"🔧 {service_host}/{description} (Status: {status})")
 
             return [
                 {
                     "type": "text",
                     "text": (
-                        f"🔧 **CheckMK Services** ({len(services)} total, showing first {len(service_list)}):\\n\\n"
+                        _missing_state_warning(missing, len(services))
+                        + f"🔧 **CheckMK Services** ({len(services)} total, showing first {len(service_list)}):\\n\\n"
                         + "\\n".join(service_list)
                     ),
                 }
@@ -300,18 +323,17 @@ class ServiceHandler(BaseHandler):
         # Method 3: Try correct CheckMK Query API format for services (based on cURL example)
         try:
             # Use proper CheckMK API query format with columns and query parameters
-            params = {
-                "columns": ["host_name", "description", "state", "plugin_output", "last_check", "last_state_change"],
-                "query": {
+            result = self.client.list_monitoring(
+                "service",
+                ["host_name", "description", "state", "plugin_output", "last_check", "last_state_change"],
+                query={
                     "op": "and",
                     "expr": [
                         {"op": "=", "left": "host_name", "right": host_name},
                         {"op": "=", "left": "description", "right": service_description},
                     ],
                 },
-            }
-
-            result = self.client.get("domain-types/service/collections/all", params=params)
+            )
             self.logger.debug(f"Correct service query format result: {result}")
 
             if result.get("success"):
